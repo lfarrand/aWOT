@@ -21,8 +21,9 @@
 */
 
 #include "aWOT.h"
+#include "QNEthernet.h"
 
-Response::Response(Client* client, uint8_t * writeBuffer, int writeBufferLength)
+Response::Response(EthernetClient* client, uint8_t * writeBuffer, int writeBufferLength)
     : m_stream(client),
       m_headers(),
       m_contentLenghtSet(false),
@@ -199,7 +200,7 @@ size_t Response::write(uint8_t data) {
       m_stream->print(CRLF);
     }
 
-    m_stream->write(m_buffer, SERVER_OUTPUT_BUFFER_SIZE);
+    m_stream->writeFully(m_buffer, SERVER_OUTPUT_BUFFER_SIZE);
 
     if (m_headersSent && !m_contentLenghtSet) {
       m_stream->print(CRLF);
@@ -225,7 +226,7 @@ size_t Response::write(uint8_t *buffer, size_t bufferLength) {
     m_stream->print(CRLF);
   }
 
-  m_stream->write(buffer, bufferLength);
+  m_stream->writeFully(buffer, bufferLength);
 
   if (m_headersSent && !m_contentLenghtSet) {
     m_stream->print(CRLF);
@@ -677,7 +678,7 @@ void Response::m_flushBuf() {
       m_stream->print(CRLF);
     }
 
-    m_stream->write(m_buffer, m_bufFill);
+    m_stream->writeFully(m_buffer, m_bufFill);
 
     if (m_headersSent && !m_contentLenghtSet) {
       m_stream->print(CRLF);
@@ -697,7 +698,7 @@ void Response::m_finalize() {
   }
 }
 
-Request::Request(Client* client, Response* m_response, HeaderNode* headerTail,
+Request::Request(EthernetClient* client, Response* m_response, HeaderNode* headerTail,
               char* urlBuffer, int urlBufferLength, unsigned long timeout,
               void* context)
     : context(context),
@@ -1570,7 +1571,7 @@ void Application::put(Router::MIDDLEWARE_PARAM middleware) {
   put(NULL, middleware);
 }
 
-void Application::process(Client *client, void *context) {
+void Application::process(EthernetClient *client, void *context) {
   if (!client) {
     return;
   }
@@ -1580,7 +1581,7 @@ void Application::process(Client *client, void *context) {
 }
 
 
-void Application::process(Client *client, char *urlBuffer, int urlBufferLength, void *context) {
+void Application::process(EthernetClient *client, char *urlBuffer, int urlBufferLength, void *context) {
   if (!client) {
     return;
   }
@@ -1589,7 +1590,7 @@ void Application::process(Client *client, char *urlBuffer, int urlBufferLength, 
   process(client, urlBuffer, urlBufferLength, writeBuffer, SERVER_OUTPUT_BUFFER_SIZE, context);
 }
 
-void Application::process(Client *client, char *urlBuffer, int urlBufferLength,   uint8_t * writeBuffer, int writeBufferLength, void* context) {
+void Application::process(EthernetClient *client, char *urlBuffer, int urlBufferLength,   uint8_t * writeBuffer, int writeBufferLength, void* context) {
   if (!client) {
     return;
   }
