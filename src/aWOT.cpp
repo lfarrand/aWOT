@@ -1,5 +1,5 @@
 /*
-  aWOT, Express.js inspired microcontreller web framework for the Web of Things
+  aWOT, Express.js inspired microcontroller web framework for the Web of Things
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -26,7 +26,7 @@
 Response::Response(EthernetClient* client, uint8_t * writeBuffer, int writeBufferLength)
     : m_stream(client),
       m_headers(),
-      m_contentLenghtSet(false),
+      m_contentLengthSet(false),
       m_contentTypeSet(false),
       m_keepAlive(false),
       m_statusSent(0),
@@ -51,10 +51,10 @@ void Response::beginHeaders() {
 
   m_sendingHeaders = true;
 
-  P(headerSeprator) = ": ";
+  P(headerSeparator) = ": ";
   for (int i = 0; i < m_headersCount; i++) {
     print(m_headers[i].name);
-    printP(headerSeprator);
+    printP(headerSeparator);
     print(m_headers[i].value);
     m_printCRLF();
   }
@@ -131,7 +131,7 @@ void Response::set(const char *name, const char *value) {
 
   P(contentLength) = "Content-Length";
   if (Application::strcmpiP(name, contentLength) == 0) {
-    m_contentLenghtSet = true;
+    m_contentLengthSet = true;
   }
 
   P(connection) = "Connection";
@@ -146,12 +146,12 @@ void Response::setDefaults() {
     set("Content-Type", "text/plain");
   }
 
-  if (m_keepAlive && !m_contentLenghtSet) {
+  if (m_keepAlive && !m_contentLengthSet) {
     set("Transfer-Encoding", "chunked");
   }
 
   if (!m_keepAlive) {
-    m_contentLenghtSet = true;
+    m_contentLengthSet = true;
     set("Connection", "close");
   }
 }
@@ -178,7 +178,7 @@ void Response::status(int code) {
     endHeaders();
     m_statusSent = 0;
   } else if (code == 204 || code == 304) {
-    m_contentLenghtSet = true;
+    m_contentLengthSet = true;
     m_contentTypeSet = true;
   }
 
@@ -195,14 +195,14 @@ size_t Response::write(uint8_t data) {
   m_buffer[m_bufFill++] = data;
 
   if (m_bufFill == SERVER_OUTPUT_BUFFER_SIZE) {
-    if (m_headersSent && !m_contentLenghtSet) {
+    if (m_headersSent && !m_contentLengthSet) {
       m_stream->print(m_bufFill, HEX);
       m_stream->print(CRLF);
     }
 
     m_stream->writeFully(m_buffer, SERVER_OUTPUT_BUFFER_SIZE);
 
-    if (m_headersSent && !m_contentLenghtSet) {
+    if (m_headersSent && !m_contentLengthSet) {
       m_stream->print(CRLF);
     }
 
@@ -221,14 +221,14 @@ size_t Response::write(uint8_t *buffer, size_t bufferLength) {
 
   m_flushBuf();
 
-  if (m_headersSent && !m_contentLenghtSet) {
+  if (m_headersSent && !m_contentLengthSet) {
     m_stream->print(bufferLength, HEX);
     m_stream->print(CRLF);
   }
 
   m_stream->writeFully(buffer, bufferLength);
 
-  if (m_headersSent && !m_contentLenghtSet) {
+  if (m_headersSent && !m_contentLengthSet) {
     m_stream->print(CRLF);
   }
 
@@ -673,14 +673,14 @@ void Response::m_printCRLF() { print(CRLF); }
 
 void Response::m_flushBuf() {
   if (m_bufFill > 0) {
-    if (m_headersSent && !m_contentLenghtSet) {
+    if (m_headersSent && !m_contentLengthSet) {
       m_stream->print(m_bufFill, HEX);
       m_stream->print(CRLF);
     }
 
     m_stream->writeFully(m_buffer, m_bufFill);
 
-    if (m_headersSent && !m_contentLenghtSet) {
+    if (m_headersSent && !m_contentLengthSet) {
       m_stream->print(CRLF);
     }
 
@@ -691,7 +691,7 @@ void Response::m_flushBuf() {
 void Response::m_finalize() {
   m_flushBuf();
 
-  if (m_headersSent && !m_contentLenghtSet) {
+  if (m_headersSent && !m_contentLengthSet) {
     m_stream->print(0, HEX);
     m_stream->print(CRLF);
     m_stream->print(CRLF);
