@@ -242,6 +242,30 @@ class Request : public Stream {
   char* m_query;
   int m_queryLength;
   bool m_readTimedout;
+
+  // --- TEG patch: slow-loris defence. See lib/aWOT/PATCHES.md ---------------
+  //
+  // Upstream has a per-BYTE timeout only, and Arduino's Stream::timedRead()
+  // busy-waits for it. A client sending one header byte just inside that window
+  // resets the timer every time, so the header phase never ends - and each wait
+  // burns a second of an 8s hardware watchdog with nothing servicing it. Eight
+  // dribbled bytes reset a running inverter.
+  //
+  // m_headerDeadline bounds the header phase as a whole. It deliberately does NOT
+  // apply once m_readingContent is set: a firmware upload is legitimately slow and
+  // its handler owns the watchdog from there.
+  unsigned long m_headerDeadline;
+  static unsigned long s_headerBudgetMs;
+  static void (*s_serviceFn)();
+
+ public:
+  // Bound the header phase and give the read loop something to call while it waits
+  // (a watchdog kick). Both optional; defaults keep upstream behaviour except for
+  // the deadline.
+  static void setHeaderBudget(unsigned long ms) { s_headerBudgetMs = ms; }
+  static void setServiceCallback(void (*fn)()) { s_serviceFn = fn; }
+
+ private:
   char* m_path;
   int m_pathLength;
   const char* m_pattern;

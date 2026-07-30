@@ -720,7 +720,14 @@ Request::Request(EthernetClient* client, Response* m_response, HeaderNode* heade
       m_pattern(NULL),
       m_route(NULL){
         _timeout = timeout;
+        m_headerDeadline = millis() + s_headerBudgetMs; // TEG patch, see PATCHES.md
       }
+
+// TEG patch defaults. 4s is enormously generous for a real client - headers arrive
+// in milliseconds - and stays clear of the 8s watchdog even if no service callback
+// is wired, so the defence does not depend on the application remembering to.
+unsigned long Request::s_headerBudgetMs = 4000;
+void (*Request::s_serviceFn)() = NULL;
 
 int Request::availableForWrite() {
   return m_response->availableForWrite();
@@ -1258,12 +1265,31 @@ void Request::m_reset() {
 bool Request::m_timedout() { return m_readTimedout; }
 
 int Request::m_timedRead() {
-  int ch = timedRead();
-  if (ch == -1) {
-    m_readTimedout = true;
+  // TEG patch: replaces Stream::timedRead(). Same per-byte timeout, but the wait
+  // services the caller's callback (watchdog) and the header phase as a whole is
+  // bounded. See lib/aWOT/PATCHES.md.
+  const unsigned long start = millis();
+  for (;;) {
+    if (s_serviceFn != NULL) {
+      s_serviceFn();
+    }
+    const int ch = m_stream->read();
+    if (ch >= 0) {
+      return ch;
+    }
+    const unsigned long now = millis();
+    if (now - start >= _timeout) {
+      break; // per-byte timeout, upstream behaviour
+    }
+    // Signed comparison so the millis() rollover cannot extend the budget. Not
+    // applied to the body: a firmware upload is legitimately slow and its handler
+    // services the watchdog itself.
+    if (!m_readingContent && static_cast<long>(now - m_headerDeadline) >= 0) {
+      break;
+    }
   }
-
-  return ch;
+  m_readTimedout = true;
+  return -1;
 }
 
 Router::Router()
