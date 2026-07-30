@@ -1273,10 +1273,18 @@ int Request::m_timedRead() {
     if (s_serviceFn != NULL) {
       s_serviceFn();
     }
-    const int ch = m_stream->read();
+    // read(), not m_stream->read(). This is the virtual Request::read(), which drains
+    // the pushback buffer the parser uses for lookahead, honours content-length
+    // exhaustion, and decrements m_left as the body is consumed. Going straight to the
+    // stream skips all three and mis-parses requests.
+    const int ch = read();
     if (ch >= 0) {
       return ch;
     }
+    // Upstream's Stream::timedRead() yields on every spin and QNEthernet services its
+    // receive path from there; without it a request that is not already buffered can
+    // never arrive, and this loop spins until it times out.
+    yield();
     const unsigned long now = millis();
     if (now - start >= _timeout) {
       break; // per-byte timeout, upstream behaviour

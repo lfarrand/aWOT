@@ -32,6 +32,20 @@ happens before a route is matched.
 - keeps the existing per-byte timeout, unchanged;
 - additionally fails the read once `m_headerDeadline` passes.
 
+**Two things it must keep doing, and did not in the first version of this patch:**
+
+- It calls the **virtual `read()`**, not `m_stream->read()`. `Stream::timedRead()`
+  dispatched virtually to `Request::read()`, which drains the pushback buffer the
+  parser uses for lookahead, honours content-length exhaustion (`m_readingContent &&
+  !m_left`), and decrements `m_left` as the body is consumed. Reading the stream
+  directly skips all three and mis-parses requests — bodies over-read past their
+  content-length, and pushed-back bytes are lost.
+- It calls **`yield()`** on every spin. QNEthernet services its receive path from
+  `yield()`; without it a request whose bytes have not already arrived can never
+  arrive, and the loop spins until it times out.
+
+Both were regressions in the first version and were caught by review before shipping.
+
 `m_headerDeadline` is set in the constructor from `s_headerBudgetMs`, default
 **4000 ms** — enormously generous for a real client, which sends headers in
 milliseconds, and clear of the 8 s watchdog even if no service callback is wired, so
