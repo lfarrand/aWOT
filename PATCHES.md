@@ -3,6 +3,54 @@
 This copy is vendored and modified. Anyone syncing it against upstream must reapply
 what follows, or reintroduce a remotely-triggerable reset of a running inverter.
 
+## Patch 2 — bound the response write
+
+**Files:** `src/aWOT.h` (Response members and two static setters), `src/aWOT.cpp`
+(`Response::Response` initialiser, `Response::m_flushBuf`, new
+`Response::m_writeBounded`).
+
+### The problem
+
+`m_flushBuf()` called `EthernetClient::writeFully()`, which spins until every byte is
+accepted and only gives up if the connection drops. QNEthernet's own source says of that
+loop:
+
+> "This may spin forever if `p.write()` always returns zero"
+
+A client that completes a request and then simply **stops reading** advertises a zero TCP
+window. `write()` returns 0 indefinitely, the loop never exits, and nothing services the
+8 s watchdog. That is an **unauthenticated one-request reset of a running inverter**, on
+any GET — no credentials, no malformed input, just a socket that goes quiet.
+
+### The change
+
+`m_writeBounded()` replaces `writeFully()`. It writes what the peer will take, calls
+`s_serviceFn` on every spin, yields so QNEthernet can service its stack, and gives up
+when either the connection drops or `s_writeBudgetMs` elapses.
+
+On giving up it latches `m_writeStalled`, marks the response ended and stops the socket.
+Subsequent flushes then **discard** their buffer instead of retrying, so the handler runs
+to completion at full speed rather than stalling again on every remaining chunk — which
+matters for the capture download, where a 2 MB ring would otherwise stall hundreds of
+times.
+
+Budget defaults to **3000 ms** — far longer than any healthy LAN peer needs to accept a
+buffer, and short enough that even several consecutive stalled flushes stay clear of the
+watchdog if no service callback is wired.
+
+### Application wiring
+
+```cpp
+Response::setServiceCallback(&serviceControlTasks);
+Response::setWriteBudget(3000);
+```
+
+### What this costs
+
+A genuinely slow but healthy client — a browser over a congested link — can now have a
+response truncated after 3 s of no progress. That is the right trade against resetting the
+power stage, but it is a behaviour change: responses are no longer guaranteed complete.
+
 ## Patch 1 — bound the header phase and service the watchdog while waiting
 
 **Files:** `src/aWOT.h` (Request members and two static setters), `src/aWOT.cpp`

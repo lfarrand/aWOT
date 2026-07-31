@@ -38,7 +38,8 @@ Response::Response(EthernetClient* client, uint8_t * writeBuffer, int writeBuffe
       m_ended(false),
       m_buffer(writeBuffer),
       m_bufferLength(writeBufferLength),
-      m_bufFill(0) {}
+      m_bufFill(0),
+      m_writeStalled(false) {}
 
 int Response::availableForWrite() {
   return SERVER_OUTPUT_BUFFER_SIZE - m_bufFill - 1;
@@ -671,14 +672,60 @@ void Response::m_printHeaders() {
 
 void Response::m_printCRLF() { print(CRLF); }
 
+// TEG patch defaults. 3s is far longer than any healthy peer needs to accept a 512-byte
+// buffer over LAN Ethernet, and short enough that even several consecutive stalled
+// flushes stay clear of the 8s watchdog when no service callback is wired.
+unsigned long Response::s_writeBudgetMs = 3000;
+void (*Response::s_serviceFn)() = NULL;
+
+// TEG patch: bounded, serviced replacement for EthernetClient::writeFully().
+// Returns false if the peer stopped accepting data within the budget.
+bool Response::m_writeBounded(const uint8_t *buf, size_t size) {
+  const unsigned long start = millis();
+  size_t rem = size;
+  while (rem > 0) {
+    if (s_serviceFn != NULL) {
+      s_serviceFn();
+    }
+    const size_t w = m_stream->write(buf, rem);
+    rem -= w;
+    buf += w;
+    if (rem == 0) {
+      return true;
+    }
+    if (!m_stream->connected()) {
+      return false; // peer gone; nothing more will ever be accepted
+    }
+    if (millis() - start >= s_writeBudgetMs) {
+      return false; // peer alive but not reading - do not spin on it
+    }
+    yield(); // QNEthernet services its stack from here
+  }
+  return true;
+}
+
 void Response::m_flushBuf() {
   if (m_bufFill > 0) {
+    // Once a flush has timed out, keep draining the buffer without touching the
+    // socket. The handler then finishes at full speed instead of stalling again on
+    // every remaining chunk, and the connection is torn down when it returns.
+    if (m_writeStalled) {
+      m_bufFill = 0;
+      return;
+    }
+
     if (m_headersSent && !m_contentLengthSet) {
       m_stream->print(m_bufFill, HEX);
       m_stream->print(CRLF);
     }
 
-    m_stream->writeFully(m_buffer, m_bufFill);
+    if (!m_writeBounded(m_buffer, m_bufFill)) {
+      m_writeStalled = true;
+      m_ended = true;
+      m_stream->stop(); // release the socket rather than leaving it half-open
+      m_bufFill = 0;
+      return;
+    }
 
     if (m_headersSent && !m_contentLengthSet) {
       m_stream->print(CRLF);
