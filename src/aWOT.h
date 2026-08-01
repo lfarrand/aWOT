@@ -141,7 +141,7 @@ class Response : public Print {
   void setDefaults();
   void status(int code);
   int statusSent();
-  size_t write(uint8_t data);
+  size_t write(uint8_t data) override;
   size_t write(uint8_t* buffer, size_t bufferLength);
   void writeP(const unsigned char* data, size_t length);
 
@@ -208,6 +208,7 @@ class Response : public Print {
   static void (*s_serviceFn)();
 
  public:
+  using Print::write;
   // Bound how long a single buffer flush may spend waiting for a peer that is
   // accepting nothing, and give the wait something to call (a watchdog kick /
   // control-task service). Defaults keep a budget but no callback.
@@ -234,6 +235,7 @@ class Request : public Stream {
   friend class Router;
 
  public:
+  using Print::write;
   enum MethodType { UNKNOWN, GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, ALL };
   void* context;
 
@@ -256,7 +258,7 @@ class Request : public Stream {
   bool route(const char* name, char* buffer, int bufferLength);
   bool route(int number, char* buffer, int bufferLength);
   int minorVersion();
-  size_t write(uint8_t data);
+  size_t write(uint8_t data) override;
   size_t write(uint8_t* buffer, size_t bufferLength);
 
  private:

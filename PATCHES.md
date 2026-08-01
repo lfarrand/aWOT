@@ -1,7 +1,39 @@
 # Local changes to aWOT
 
-This copy is vendored and modified. Anyone syncing it against upstream must reapply
+This independent fork is modified from upstream. Anyone syncing it must reapply
 what follows, or reintroduce a remotely-triggerable reset of a running inverter.
+
+## Patch 4 — reject invalid body lengths and bound repeated headers
+
+**Files:** `src/aWOT.cpp`, `test/content-length.cpp`,
+`test/headers-reading.cpp`.
+
+### Body-length liveness
+
+`Content-Length` is a non-negative decimal field. The old integer parser accepted a
+leading minus and allowed decimal overflow. A value of `-1` left `Request::m_left`
+negative; after the peer closed, `available()` could remain truthy while `read()`
+returned `-1`, so a body-drain loop never terminated. On TEG that was a remotely
+reachable watchdog reset in the unauthorized upload path.
+
+The parser now rejects either sign, detects overflow before multiply/add, and never
+reports a negative underlying `available()` result. Bulk `read()` also stops at an
+exhausted body and never drains pushback into a zero-length destination. Tests pin
+negative, signed-positive and overflowing lengths.
+
+### Duplicate registered-header bounds
+
+Repeated registered headers are joined with a comma. A first value that exactly
+filled its object left room only for the existing NUL; the duplicate path replaced
+that byte with a comma, advanced beyond the object and later wrote a new terminator
+one byte out of bounds. It now requires space for both comma and final NUL before
+modifying the buffer. A canary regression test covers the exact full-buffer case.
+
+The `Response` constructor initializer order was also aligned with declaration order
+so warning-enabled consumers do not hide new diagnostics behind `-Wreorder` noise.
+The native CMake target now enables the same useful GCC warning set explicitly, and
+`Response`/`Request` expose the inherited `Print::write` overloads to avoid
+`-Woverloaded-virtual` noise without changing aWOT's HTTP framing behavior.
 
 ## Patch 3 — drop the hard QNEthernet dependency
 
