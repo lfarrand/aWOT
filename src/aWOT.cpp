@@ -231,7 +231,12 @@ size_t Response::write(uint8_t *buffer, size_t bufferLength) {
   m_flushBuf();
 
   if (m_headersSent && !m_contentLengthSet) {
-    m_stream->print(bufferLength, HEX);
+    // Cast is load-bearing. Print has print(unsigned int, int) and print(unsigned long,
+    // int) but nothing taking size_t, so on any target where size_t is wider than
+    // unsigned long the call is ambiguous and will not compile. It happened to resolve
+    // on Teensy (size_t == unsigned int) and on Linux x86_64 (size_t == unsigned long)
+    // while the library was pinned to those; it is not portable in general.
+    m_stream->print((unsigned long)bufferLength, HEX);
     m_stream->print(CRLF);
   }
 
@@ -697,22 +702,44 @@ void (*Response::s_serviceFn)() = NULL;
 // TEG patch: bounded, serviced replacement for EthernetClient::writeFully().
 // Returns false if the peer stopped accepting data within the budget.
 bool Response::m_writeBounded(const uint8_t *buf, size_t size) {
-  const unsigned long start = millis();
+  // The budget measures time WITHOUT PROGRESS, not total time in this call.
+  //
+  // Budgeting total time looks equivalent and is not. Client::write() may legally
+  // accept only part of what it is offered, so a large body is delivered over many
+  // partial writes with a yield() between them; a peer that is reading steadily but
+  // slowly - a congested link, or the 2MB capture download - accumulates elapsed time
+  // without ever stalling, and would have its response truncated at the budget. That is
+  // the very truncation the switch to writeFully() was made to fix, reintroduced under
+  // a different trigger. A host test caught it: 3000 bytes at 7 bytes per write lost
+  // more than half the body.
+  //
+  // Resetting the deadline on every byte accepted keeps the anti-hang guarantee intact -
+  // a peer that has genuinely stopped reading accepts nothing, so the timer never
+  // resets and still trips at the budget - while a peer that is making progress is
+  // never cut off.
+  unsigned long lastProgress = millis();
   size_t rem = size;
   while (rem > 0) {
     if (s_serviceFn != NULL) {
       s_serviceFn();
     }
-    const size_t w = m_stream->write(buf, rem);
+    size_t w = m_stream->write(buf, rem);
+    if (w > rem) {
+      w = rem; // a Client must never claim more than it was offered; rem is unsigned
+    }
     rem -= w;
     buf += w;
     if (rem == 0) {
       return true;
     }
+    if (w > 0) {
+      lastProgress = millis(); // peer is draining, just not in one go
+    }
     if (!m_stream->connected()) {
       return false; // peer gone; nothing more will ever be accepted
     }
-    if (millis() - start >= s_writeBudgetMs) {
+    // Signed comparison so the millis() wrap at ~49 days cannot extend the budget.
+    if ((long)(millis() - lastProgress) >= (long)s_writeBudgetMs) {
       return false; // peer alive but not reading - do not spin on it
     }
     yield(); // QNEthernet services its stack from here
