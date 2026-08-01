@@ -72,19 +72,85 @@ any GET — no credentials, no malformed input, just a socket that goes quiet.
 
 ### The change
 
-`m_writeBounded()` replaces `writeFully()`. It writes what the peer will take, calls
-`s_serviceFn` on every spin, yields so QNEthernet can service its stack, and gives up
-when either the connection drops or `s_writeBudgetMs` elapses.
+`m_writeBounded()` replaces `writeFully()`. It writes what the peer will take, retries
+the remainder, calls `s_serviceFn` on every spin, yields so QNEthernet can service its
+stack, and gives up when either the connection drops or the peer has accepted **nothing**
+for `s_writeBudgetMs`.
+
+**Two budgets are required, and each was got wrong once before this settled.**
+
+| Budget | Bounds | Default | Why it alone is not enough |
+|---|---|---|---|
+| `s_writeBudgetMs` | time with the peer accepting **nothing**; reset on every byte | 3 s | Bounds nothing on its own. A peer accepting one byte every 2.9 s resets it for ever. |
+| `s_writeTotalBudgetMs` | one whole **response**, absolute, from `Response` construction | 30 s | On its own it truncates an honest slow peer — the original bug. |
+
+The first version budgeted *total* time in the call. `Client::write()` may legally accept
+only part of what it is offered, so a large body goes out over many partial writes, and a
+peer reading steadily but slowly accumulated elapsed time without ever stalling — cut off
+mid-body, which is exactly the truncation the `writeFully()` dependency existed to
+prevent. A host test caught it: 3000 bytes at 7 bytes per write lost more than half.
+
+The obvious repair — reset the deadline on every byte accepted — fixed the truncation and
+**removed the bound entirely**. Hold time became `bodyBytes × dripInterval`: measured at
+24 s for a 200-byte body at an 80 ms drip, and by construction unbounded. At the shipped
+budget a 40 KB page works out at roughly 33 hours and the 2 MB capture download at about
+67 days, on one unauthenticated GET. That does not reset the board, because `s_serviceFn`
+keeps kicking the watchdog — but everything in the host's `loop()` that is *not* a control
+task starves for the whole hold. This is the same slow-drip class the request side already
+defends against with an absolute `m_headerDeadline`; the write side needed the same thing.
+
+So: reset-on-progress **and** a hard ceiling. Neither alone is correct.
 
 On giving up it latches `m_writeStalled`, marks the response ended and stops the socket.
-Subsequent flushes then **discard** their buffer instead of retrying, so the handler runs
-to completion at full speed rather than stalling again on every remaining chunk — which
-matters for the capture download, where a 2 MB ring would otherwise stall hundreds of
-times.
+All three write sites then **discard** their buffer instead of retrying, so the handler
+runs to completion at full speed rather than stalling again on every remaining chunk —
+which matters for the capture download, where a 2 MB ring would otherwise stall hundreds
+of times.
 
-Budget defaults to **3000 ms** — far longer than any healthy LAN peer needs to accept a
-buffer, and short enough that even several consecutive stalled flushes stay clear of the
-watchdog if no service callback is wired.
+That entry check lives in all three sites deliberately. With it only in `m_flushBuf()`,
+the two `Response::write()` overloads re-entered the socket on every later buffer, and
+boundedness rested entirely on the concrete client making `connected()` false inside
+`stop()`. QNEthernet does; **aWOT's own `StreamClient` does not** (`stop()` is a no-op and
+`connected()` returns 1). Measured against such a client, a 3000-byte body burned one full
+budget *per buffer* — the very coupling to a concrete client type that patch 3 removes.
+
+A `Client` returning more than it was offered is treated as a hard error, not clamped to
+the remaining count. Clamping would exit the loop with `rem == 0` and report success —
+silent truncation — and the unsigned subtraction would run the buffer pointer off the end.
+
+### What a caller can observe
+
+`bytesSent()` counts what the handler produced, **not** what reached the peer; after a
+stall those differ completely. `stalled()` is how a caller tells. Both `write()` overloads
+report their full length back to the handler on the stall path, which is what lets it
+drain quickly instead of blocking chunk by chunk.
+
+### Known gaps
+
+- The chunked framing — the length prefix and CRLFs — goes out through
+  `m_stream->print(...)`, whose short return is ignored, so the anti-truncation guarantee
+  covers the payload only. Pre-existing, and **not reachable in TEG**: no handler sets
+  `Connection: keep-alive`, so `setDefaults()` forces `m_contentLengthSet` and every
+  chunked branch is dead in the firmware.
+- QNEthernet's `EthernetClient::stop()` blocks for up to its 1000 ms connection timeout
+  waiting for a FIN that a zero-window peer cannot acknowledge, and it does **not** call
+  `s_serviceFn` while waiting. One second of unserviced control tasks immediately after a
+  stall. Clear of the 8 s watchdog, but worth knowing.
+
+### Tests
+
+`test/write-bounded.cpp` pins every property that has been broken at least once:
+
+- short writes retried to completion on the byte path, the bulk path, and a
+  one-byte-at-a-time trickle — the anti-truncation property;
+- bounded give-up against a connected-but-silent peer, and immediate abort against a
+  disconnected one;
+- **an absolute bound against a dripping peer** that keeps resetting the no-progress
+  budget — the regression that reset-on-progress introduced;
+- exactly one `stop()` against a client whose `stop()` does not drop `connected()`;
+- failure, not success, from a client claiming to have accepted more than it was offered.
+
+`test/CMakeLists.txt` globs `*.cpp`, so the file registers itself.
 
 ### Application wiring
 

@@ -181,19 +181,47 @@ class Response : public Print {
   // window, write() returns 0 for ever, and nothing services the watchdog - an
   // unauthenticated one-request reset of a running inverter, on any GET.
   //
-  // m_writeStalled latches once the budget is exhausted, so the handler runs to
+  // m_writeStalled latches once a budget is exhausted, so the handler runs to
   // completion quickly against a discarded buffer instead of blocking on every
   // subsequent chunk.
+  //
+  // TWO budgets are needed, and having only one is a trap this patch fell into twice:
+  //
+  //   s_writeBudgetMs   - time with the peer accepting NOTHING. Reset on every byte,
+  //                       so a slow-but-honest peer is never truncated. On its own it
+  //                       bounds nothing: a peer that takes one byte just inside the
+  //                       window holds the loop for ever, which is the same slow-drip
+  //                       attack the header phase already defends against with an
+  //                       absolute deadline (see m_headerDeadline below).
+  //   m_writeDeadline   - an absolute per-response ceiling from s_writeTotalBudgetMs.
+  //                       This is what actually bounds the hold. Control tasks keep
+  //                       running via s_serviceFn, but everything else in loop() -
+  //                       MQTT, NTP, metrics, the deferred OTA commit, the config
+  //                       persist, the display - starves until the response ends.
+  //
+  // Budgeting only total time truncates healthy slow peers; budgeting only progress
+  // bounds nothing. Both, together, are the whole fix.
   bool m_writeStalled;
+  unsigned long m_writeDeadline;
   static unsigned long s_writeBudgetMs;
+  static unsigned long s_writeTotalBudgetMs;
   static void (*s_serviceFn)();
 
  public:
-  // Bound how long a single buffer flush may spend waiting for the peer, and give the
-  // wait something to call (a watchdog kick / control-task service). Defaults keep a
-  // budget but no callback.
+  // Bound how long a single buffer flush may spend waiting for a peer that is
+  // accepting nothing, and give the wait something to call (a watchdog kick /
+  // control-task service). Defaults keep a budget but no callback.
   static void setWriteBudget(unsigned long ms) { s_writeBudgetMs = ms; }
   static void setServiceCallback(void (*fn)()) { s_serviceFn = fn; }
+
+  // Absolute ceiling on one whole response, however slowly the peer drips. Must be
+  // long enough for the largest legitimate body over the slowest link you care about.
+  static void setWriteTotalBudget(unsigned long ms) { s_writeTotalBudgetMs = ms; }
+
+  // True once a budget was exhausted and the response was abandoned. bytesSent()
+  // counts what the handler handed over, not what reached the peer, so a caller that
+  // logs or gates on it needs this to know the difference.
+  bool stalled() { return m_writeStalled; }
 
  private:
   uint8_t * m_buffer;

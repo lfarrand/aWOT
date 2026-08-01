@@ -38,7 +38,10 @@ Response::Response(Client* client, uint8_t * writeBuffer, int writeBufferLength)
       m_buffer(writeBuffer),
       m_bufferLength(writeBufferLength),
       m_bufFill(0),
-      m_writeStalled(false) {}
+      m_writeStalled(false),
+      // Absolute ceiling starts ticking when the response object is created, i.e.
+      // once per request, so it bounds the whole response rather than each buffer.
+      m_writeDeadline(millis() + s_writeTotalBudgetMs) {}
 
 int Response::availableForWrite() {
   return SERVER_OUTPUT_BUFFER_SIZE - m_bufFill - 1;
@@ -195,6 +198,17 @@ size_t Response::write(uint8_t data) {
   m_buffer[m_bufFill++] = data;
 
   if (m_bufFill == SERVER_OUTPUT_BUFFER_SIZE) {
+    // Discard once stalled, exactly as m_flushBuf() does. Without this entry check the
+    // socket is re-entered on every subsequent buffer, so boundedness depends on the
+    // concrete client making connected() false after stop() - which QNEthernet does but
+    // aWOT's own StreamClient does not (its stop() is a no-op and connected() is always
+    // 1). Measured that way, a 3000-byte body burned one FULL budget per buffer.
+    if (m_writeStalled) {
+      m_bufFill = 0;
+      m_bytesSent += (int)sizeof(data);
+      return sizeof(data);
+    }
+
     if (m_headersSent && !m_contentLengthSet) {
       m_stream->print(m_bufFill, HEX);
       m_stream->print(CRLF);
@@ -208,6 +222,10 @@ size_t Response::write(uint8_t data) {
       m_ended = true;
       m_stream->stop();
       m_bufFill = 0;
+      // Count it like the success path below, so the two overloads agree. bytesSent()
+      // is what the handler produced, not what reached the peer - stalled() is how a
+      // caller tells the difference.
+      m_bytesSent += (int)sizeof(data);
       return sizeof(data); // report accepted; the response is already abandoned
     }
 
@@ -229,6 +247,12 @@ size_t Response::write(uint8_t *buffer, size_t bufferLength) {
   }
 
   m_flushBuf();
+
+  // Discard once stalled, for the same reason as the byte path above.
+  if (m_writeStalled) {
+    m_bytesSent += bufferLength;
+    return bufferLength;
+  }
 
   if (m_headersSent && !m_contentLengthSet) {
     // Cast is load-bearing. Print has print(unsigned int, int) and print(unsigned long,
@@ -697,6 +721,11 @@ void Response::m_printCRLF() { print(CRLF); }
 // buffer over LAN Ethernet, and short enough that even several consecutive stalled
 // flushes stay clear of the 8s watchdog when no service callback is wired.
 unsigned long Response::s_writeBudgetMs = 3000;
+// 30 s for one whole response. Generous next to any real transfer on a LAN - the
+// 2MB capture download needs well under a second at link speed - and short enough
+// that a starved MQTT/NTP/OTA/config-persist path recovers on its own. The
+// no-progress budget above cannot bound this on its own; see aWOT.h.
+unsigned long Response::s_writeTotalBudgetMs = 30000;
 void (*Response::s_serviceFn)() = NULL;
 
 // TEG patch: bounded, serviced replacement for EthernetClient::writeFully().
@@ -723,9 +752,14 @@ bool Response::m_writeBounded(const uint8_t *buf, size_t size) {
     if (s_serviceFn != NULL) {
       s_serviceFn();
     }
-    size_t w = m_stream->write(buf, rem);
+    const size_t w = m_stream->write(buf, rem);
     if (w > rem) {
-      w = rem; // a Client must never claim more than it was offered; rem is unsigned
+      // A Client must never claim more than it was offered. Treat it as a hard
+      // error rather than clamping to rem: clamping would make the loop exit with
+      // rem == 0 and report success, turning a broken client into exactly the
+      // silent truncation this function exists to prevent. rem is unsigned, so
+      // subtracting an over-large w would also run buf off the end of the buffer.
+      return false;
     }
     rem -= w;
     buf += w;
@@ -738,9 +772,17 @@ bool Response::m_writeBounded(const uint8_t *buf, size_t size) {
     if (!m_stream->connected()) {
       return false; // peer gone; nothing more will ever be accepted
     }
-    // Signed comparison so the millis() wrap at ~49 days cannot extend the budget.
+    // Signed comparisons throughout, so the millis() wrap at ~49 days cannot extend
+    // either budget.
     if ((long)(millis() - lastProgress) >= (long)s_writeBudgetMs) {
       return false; // peer alive but not reading - do not spin on it
+    }
+    if ((long)(millis() - m_writeDeadline) >= 0) {
+      // The absolute ceiling. Without it, reset-on-progress means a peer that
+      // accepts one byte per budget-minus-epsilon holds this loop indefinitely -
+      // measured at ~24 s for a 200-byte body at an 80 ms drip, and unbounded by
+      // construction. Progress alone is not evidence of good faith.
+      return false;
     }
     yield(); // QNEthernet services its stack from here
   }
