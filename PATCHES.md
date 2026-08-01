@@ -3,11 +3,59 @@
 This copy is vendored and modified. Anyone syncing it against upstream must reapply
 what follows, or reintroduce a remotely-triggerable reset of a running inverter.
 
+## Patch 3 — drop the hard QNEthernet dependency
+
+**Files:** `src/aWOT.h` (removed `#include "QNEthernet.h"` and its `using namespace`;
+`EthernetClient*` → `Client*`), `src/aWOT.cpp` (same, plus the include at the top).
+
+### Why the dependency existed
+
+It was added deliberately, in `1a2d9ce "Fixed truncated output"`, and it fixed a real bug.
+Arduino's `Client::write(buf, len)` may accept **fewer bytes than asked for**; aWOT
+ignored the return value, so whatever the first call did not take was silently dropped and
+the browser got a truncated page. Switching to QNEthernet's concrete `EthernetClient` gave
+access to `writeFully()`, which loops until the whole buffer is accepted.
+
+### Why it can now go
+
+Patch 2 replaced `writeFully()` with `m_writeBounded()`, which is itself a full-write
+retry loop — it calls `write()`, advances by the returned count, and repeats until
+`rem == 0`. **The truncation guarantee is unchanged**; short writes are still retried to
+completion. `m_writeBounded()` additionally bails out on a dead or non-reading peer, which
+`writeFully()` would not.
+
+Once patch 2 covered all three call sites, `writeFully()` was the only QNEthernet-specific
+method left in the library. Everything else `m_stream` is asked to do — `available`,
+`connected`, `flush`, `print`, `read`, `stop`, `write` — is plain Arduino `Client`/`Print`.
+
+### What it buys
+
+The dependency made the library uncompilable anywhere without QNEthernet, which is to say
+anywhere that is not a Teensy 4.x. Its own CI targets Linux and macOS hosts and an Arduino
+Uno, so **every CI run had failed** with `fatal error: QNEthernet.h: No such file or
+directory` for as long as the include existed — the regression suite was dark. Taking
+`Client*` restores upstream's portability and lets that suite run again.
+
+Callers are unaffected: `EthernetClient` derives from `Client`, so an `EthernetClient*`
+still binds to `Application::process()` with no cast.
+
+### Knock-on in the firmware
+
+`src/main.h` had been relying on aWOT to pull QNEthernet in transitively. It now includes
+`<QNEthernet.h>` itself. Same stack, declared where it is actually used.
+
 ## Patch 2 — bound the response write
 
 **Files:** `src/aWOT.h` (Response members and two static setters), `src/aWOT.cpp`
-(`Response::Response` initialiser, `Response::m_flushBuf`, new
-`Response::m_writeBounded`).
+(`Response::Response` initialiser, `Response::m_flushBuf`, `Response::write(uint8_t)`,
+`Response::write(uint8_t*, size_t)`, new `Response::m_writeBounded`).
+
+> **Note.** The first version of this patch converted only `m_flushBuf()`. The two
+> `Response::write()` overloads kept calling `writeFully()` directly, and between them
+> they carry *most* of a large response — the buffer-full path and the bulk-write path
+> used by `sendAsset()` and the capture download. The stall fix therefore covered only the
+> final partial buffer, and the unauthenticated reset remained reachable on any response
+> bigger than one buffer. All three sites are converted now.
 
 ### The problem
 

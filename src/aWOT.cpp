@@ -21,9 +21,8 @@
 */
 
 #include "aWOT.h"
-#include "QNEthernet.h"
 
-Response::Response(EthernetClient* client, uint8_t * writeBuffer, int writeBufferLength)
+Response::Response(Client* client, uint8_t * writeBuffer, int writeBufferLength)
     : m_stream(client),
       m_headers(),
       m_contentLengthSet(false),
@@ -201,7 +200,16 @@ size_t Response::write(uint8_t data) {
       m_stream->print(CRLF);
     }
 
-    m_stream->writeFully(m_buffer, SERVER_OUTPUT_BUFFER_SIZE);
+    // Bounded, like m_flushBuf(). This path fires whenever the output buffer fills, so
+    // it carries the bulk of any large response - leaving it on writeFully() meant the
+    // stall fix only covered the final partial buffer.
+    if (!m_writeBounded(m_buffer, SERVER_OUTPUT_BUFFER_SIZE)) {
+      m_writeStalled = true;
+      m_ended = true;
+      m_stream->stop();
+      m_bufFill = 0;
+      return sizeof(data); // report accepted; the response is already abandoned
+    }
 
     if (m_headersSent && !m_contentLengthSet) {
       m_stream->print(CRLF);
@@ -227,7 +235,15 @@ size_t Response::write(uint8_t *buffer, size_t bufferLength) {
     m_stream->print(CRLF);
   }
 
-  m_stream->writeFully(buffer, bufferLength);
+  // Bounded, like m_flushBuf(). This is the bulk-write path used by sendAsset() and the
+  // capture download, so it is the one a stalled reader is most likely to sit on.
+  if (!m_writeBounded(buffer, bufferLength)) {
+    m_writeStalled = true;
+    m_ended = true;
+    m_stream->stop();
+    m_bytesSent += bufferLength;
+    return bufferLength; // report accepted; the response is already abandoned
+  }
 
   if (m_headersSent && !m_contentLengthSet) {
     m_stream->print(CRLF);
@@ -745,7 +761,7 @@ void Response::m_finalize() {
   }
 }
 
-Request::Request(EthernetClient* client, Response* m_response, HeaderNode* headerTail,
+Request::Request(Client* client, Response* m_response, HeaderNode* headerTail,
               char* urlBuffer, int urlBufferLength, unsigned long timeout,
               void* context)
     : context(context),
@@ -1652,7 +1668,7 @@ void Application::put(Router::MIDDLEWARE_PARAM middleware) {
   put(NULL, middleware);
 }
 
-void Application::process(EthernetClient *client, void *context) {
+void Application::process(Client *client, void *context) {
   if (!client) {
     return;
   }
@@ -1662,7 +1678,7 @@ void Application::process(EthernetClient *client, void *context) {
 }
 
 
-void Application::process(EthernetClient *client, char *urlBuffer, int urlBufferLength, void *context) {
+void Application::process(Client *client, char *urlBuffer, int urlBufferLength, void *context) {
   if (!client) {
     return;
   }
@@ -1671,7 +1687,7 @@ void Application::process(EthernetClient *client, char *urlBuffer, int urlBuffer
   process(client, urlBuffer, urlBufferLength, writeBuffer, SERVER_OUTPUT_BUFFER_SIZE, context);
 }
 
-void Application::process(EthernetClient *client, char *urlBuffer, int urlBufferLength,   uint8_t * writeBuffer, int writeBufferLength, void* context) {
+void Application::process(Client *client, char *urlBuffer, int urlBufferLength,   uint8_t * writeBuffer, int writeBufferLength, void* context) {
   if (!client) {
     return;
   }

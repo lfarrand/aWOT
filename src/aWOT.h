@@ -28,9 +28,12 @@
 #include <string.h>
 
 #include "Client.h"
-#include "QNEthernet.h"
-using namespace qindesign::network;
-
+// The QNEthernet include and its `using namespace` were removed 2026-08-01. They were
+// added so Response could call EthernetClient::writeFully(); that is now replaced by
+// m_writeBounded() (see PATCHES.md, patch 2), and every remaining m_stream call is
+// plain Arduino Client/Print. Depending on a Teensy-only Ethernet stack made this
+// library uncompilable on the hosts and boards its own CI targets, so the test suite
+// and example builds had been failing for as long as the dependency existed.
 #if defined(STD_FUNCTION_MIDDLEWARE)
 #include <functional>
 #define MIDDLEWARE_PARAM  Middleware
@@ -143,7 +146,7 @@ class Response : public Print {
   void writeP(const unsigned char* data, size_t length);
 
  private:
-  Response(EthernetClient* client,   uint8_t * writeBuffer, int writeBufferLength);
+  Response(Client* client,   uint8_t * writeBuffer, int writeBufferLength);
 
   void m_printStatus(int code);
   bool m_shouldPrintHeaders();
@@ -153,7 +156,7 @@ class Response : public Print {
   bool m_writeBounded(const uint8_t *buf, size_t size);
   void m_finalize();
 
-  EthernetClient* m_stream;
+  Client* m_stream;
   struct Headers {
     const char* name;
     const char* value;
@@ -236,7 +239,7 @@ class Request : public Stream {
     HeaderNode* next;
   };
 
-  Request(EthernetClient* client, Response* m_response, HeaderNode* headerTail,
+  Request(Client* client, Response* m_response, HeaderNode* headerTail,
               char* urlBuffer, int urlBufferLength, unsigned long timeout,
               void* context);
   bool m_processMethod();
@@ -255,7 +258,7 @@ class Request : public Stream {
   int m_timedRead();
   bool m_timedout();
 
-  EthernetClient* m_stream;
+  Client* m_stream;
   Response* m_response;
   MethodType m_method;
   int m_minorVersion;
@@ -371,9 +374,9 @@ class Application {
   void post(Router::MIDDLEWARE_PARAM middleware);
   void put(const char* path, Router::MIDDLEWARE_PARAM middleware);
   void put(Router::MIDDLEWARE_PARAM middleware);
-  void process(EthernetClient* client, void* context = NULL);
-  void process(EthernetClient* client, char* urlbuffer, int urlBufferLength, void* context = NULL);
-  void process(EthernetClient* client, char* urlBuffer, int urlBufferLength, uint8_t * writeBuffer, int writeBufferLength, void* context = NULL);
+  void process(Client* client, void* context = NULL);
+  void process(Client* client, char* urlbuffer, int urlBufferLength, void* context = NULL);
+  void process(Client* client, char* urlBuffer, int urlBufferLength, uint8_t * writeBuffer, int writeBufferLength, void* context = NULL);
   void process(Stream* stream, void* context = NULL);
   void process(Stream* stream, char* urlbuffer, int urlBufferLength, void* context = NULL);
   void process(Stream* stream, char* urlBuffer, int urlBufferLength, uint8_t * writeBuffer, int writeBufferLength, void* context = NULL);
