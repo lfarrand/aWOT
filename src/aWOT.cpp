@@ -925,6 +925,8 @@ bool Request::form(char *name, int nameLength, char *value, int valueLength) {
   int ch;
   bool foundSomething = false;
   bool readingName = true;
+  bool nameFits = true;
+  bool valueFits = true;
 
   memset(name, 0, nameLength);
   memset(value, 0, valueLength);
@@ -937,7 +939,7 @@ bool Request::form(char *name, int nameLength, char *value, int valueLength) {
       readingName = false;
       continue;
     } else if (ch == '&') {
-      return nameLength > 0 && valueLength > 0;
+      return nameFits && valueFits;
     } else if (ch == '%') {
       int high = m_timedRead();
       if (high == -1) {
@@ -961,14 +963,22 @@ bool Request::form(char *name, int nameLength, char *value, int valueLength) {
       }
     }
 
-    if (readingName && --nameLength) {
-      *name++ = ch;
-    } else if (!readingName && --valueLength) {
+    if (readingName) {
+      if (nameLength > 1) {
+        *name++ = ch;
+        --nameLength;
+      } else {
+        nameFits = false;
+      }
+    } else if (valueLength > 1) {
       *value++ = ch;
+      --valueLength;
+    } else {
+      valueFits = false;
     }
   }
 
-  return foundSomething && nameLength > 0 && valueLength > 0;
+  return foundSomething && nameFits && valueFits;
 }
 
 int Request::left() { return m_left + m_pushbackDepth; }
