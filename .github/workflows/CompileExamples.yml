@@ -55,10 +55,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup Arduino CLI
-        uses: arduino/setup-arduino-cli@81d310742121c928ea9c8bbd407b4217b432ae02 # v2.0.0
-        with:
-          version: "1.5.1"
+      - name: Install checksum-verified Arduino CLI
+        env:
+          ARDUINO_CLI_VERSION: "1.5.1"
+          ARDUINO_CLI_SHA256: "28a8e119c498a25607821c36cb2dc49e8463941b261a0d99091baa7bc692dd2b"
+        run: |
+          set -euo pipefail
+          archive="arduino-cli_${ARDUINO_CLI_VERSION}_Linux_64bit.tar.gz"
+          install_dir="$RUNNER_TEMP/arduino-cli"
+          curl --fail --location --retry 3 \
+            "https://github.com/arduino/arduino-cli/releases/download/v${ARDUINO_CLI_VERSION}/${archive}" \
+            --output "$RUNNER_TEMP/$archive"
+          echo "$ARDUINO_CLI_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --strict
+          mkdir -p "$install_dir"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$install_dir" arduino-cli
+          echo "$install_dir" >> "$GITHUB_PATH"
 
       - name: Install platform ${{ matrix.config.platform }}
         env:

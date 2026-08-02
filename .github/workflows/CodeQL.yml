@@ -32,6 +32,7 @@ jobs:
         with:
           languages: c-cpp
           queries: security-extended
+          build-mode: manual
       - name: Configure native build
         run: cmake -S test -B test/codeql -DCMAKE_BUILD_TYPE=Debug
       - name: Build native tests
