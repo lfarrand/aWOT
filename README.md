@@ -24,6 +24,28 @@ Arduino web server library.
  * [Response](https://awot.net/en/3x/api.html#res)
  * [Router](https://awot.net/en/3x/api.html#router)
 
+## Native tests and coverage
+
+The maintained fork tests the complete `src/aWOT.cpp`/`src/aWOT.h` implementation,
+including request parsing, routing, response framing, bounded writes and malformed
+input. Pull requests fail if GCC line coverage drops below 90%. The current suite
+measures 95.5% lines (1,941/2,033), 93.4% functions and 85.2% branches with
+gcovr 8.6. Line coverage is the CI gate; branch coverage is reported separately
+and is not represented as having reached 90%.
+
+```sh
+cmake -S test -B test/coverage -DENABLE_COVERAGE=ON
+cmake --build test/coverage --parallel 4
+ctest --test-dir test/coverage --output-on-failure
+gcovr --root . --filter 'src/' --object-directory test/coverage \
+  --merge-mode-functions=merge-use-line-min \
+  --print-summary --fail-under-line 90
+```
+
+These are host tests of HTTP behavior. They do not replace an integration test
+against the concrete Arduino network client used by a device. Linux CI also runs
+the complete suite under AddressSanitizer and UndefinedBehaviorSanitizer.
+
 ## Compatibility
 
 The aWOT web server library has been designed to work with all Arduino compatible development boards and networking options. This also means that switching the board or changing from WiFi to Ethernet will require minimal changes. The examples directory shows you how to use the library with the most popular Ethernet and WiFi libraries 

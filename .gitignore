@@ -19,5 +19,8 @@ vendor
 *.bin.dSYM
 
 
-# Host unit-test build output (cmake -B test/build)
-test/build/
+# Host unit-test build output
+test/build*/
+test/coverage*/
+test/sanitizers*/
+test/.coverage-baseline/

@@ -1,4 +1,8 @@
 name: Unit Tests
+
+permissions:
+  contents: read
+
 on:
   push:
     paths:
@@ -25,12 +29,12 @@ jobs:
       matrix:
         config:
           - name: "Linux x86_64"
-            os: "ubuntu-latest"
+            os: "ubuntu-24.04"
           - name: "macOS Universal"
-            os: "macos-latest"
+            os: "macos-14"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - name: Create Build Environment
         run: cmake -E make_directory ${{ env.BUILD_DIR }}
       - name: Running CMake
@@ -42,4 +46,46 @@ jobs:
       - name: Run Unit Tests
         if: ${{ success() }}
         working-directory: ${{ env.BUILD_DIR }}
-        run: ctest
+        run: ctest --output-on-failure
+
+  coverage:
+    name: "Coverage (minimum 90% lines)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Set up Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned coverage tool
+        run: python -m pip install --disable-pip-version-check gcovr==8.6
+      - name: Configure coverage build
+        run: cmake -S test -B test/coverage -DENABLE_COVERAGE=ON
+      - name: Build coverage tests
+        run: cmake --build test/coverage --parallel 4
+      - name: Run coverage tests
+        run: ctest --test-dir test/coverage --output-on-failure
+      - name: Enforce full-library line coverage
+        run: >-
+          gcovr --root . --filter 'src/' --object-directory test/coverage
+          --merge-mode-functions=merge-use-line-min
+          --print-summary --fail-under-line 90
+
+  sanitizers:
+    name: "Address/undefined-behavior sanitizers"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Configure sanitizer build
+        run: cmake -S test -B test/sanitizers -DENABLE_SANITIZERS=ON
+      - name: Build sanitizer tests
+        run: cmake --build test/sanitizers --parallel 4
+      - name: Run sanitizer tests
+        run: ctest --test-dir test/sanitizers --output-on-failure

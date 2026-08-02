@@ -3,6 +3,36 @@
 This independent fork is modified from upstream. Anyone syncing it must reapply
 what follows, or reintroduce a remotely-triggerable reset of a running inverter.
 
+## Patch 5 — complete public-API coverage and parser correctness
+
+**Files:** `src/aWOT.cpp`, `test/api-surface.cpp`, `test/security-edge.cpp`,
+`test/CMakeLists.txt`, `.github/workflows/NativeUnitTests.yml`.
+
+`Response::get()` used the number of stored headers as its array index after finding
+a match, reading the next unused slot instead of returning the matched value. The
+lookup now uses the loop index, with case-insensitive first/middle-entry regressions.
+
+The HTTP-version parser also accepted version text as a substring and skipped unknown
+bytes until CRLF. It now requires the request-line token to be exactly HTTP/1.0 or
+HTTP/1.1. URL and form percent escapes reject truncation, non-hex digits, NUL and
+line-control bytes. Conflicting Content-Length fields, every unsupported
+Transfer-Encoding, and Transfer-Encoding plus Content-Length are rejected before
+dispatch, closing request-smuggling ambiguity for a server with no chunked decoder.
+
+Caller-supplied response and URL buffers are now governed by their actual lengths,
+including zero and one-byte edge cases. Previously a response buffer smaller than
+`SERVER_OUTPUT_BUFFER_SIZE` could be written using the compile-time size and corrupt
+adjacent memory. Router mounts also require a path-segment boundary, so `/api` no
+longer matches `/apiary`.
+
+The expanded suite covers all documented status reasons, public request/response
+accessors, every router/application registration overload, process overloads,
+pushback and content-length-bounded reads, percent decoding, comparison ordering and
+malformed request stages. GCC/gcovr coverage is enforced at 90% lines over the whole
+library; the current result is 95.5% lines (1,941/2,033), 93.4% functions and
+85.2% branches. Linux CI additionally runs ASan/UBSan. Branch coverage is reported
+but is not part of the 90% line gate.
+
 ## Patch 4 — reject invalid body lengths and bound repeated headers
 
 **Files:** `src/aWOT.cpp`, `test/content-length.cpp`,

@@ -2,6 +2,25 @@ cmake_minimum_required( VERSION 3.18 )
 
 project( aWOT-test LANGUAGES CXX )
 
+option( ENABLE_COVERAGE "Instrument native tests for gcov/gcovr" OFF )
+option( ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF )
+
+if ( ENABLE_COVERAGE )
+  if ( NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" )
+    message( FATAL_ERROR "ENABLE_COVERAGE requires GCC/gcov" )
+  endif()
+  add_compile_options( --coverage -O0 -g )
+  add_link_options( --coverage )
+endif()
+
+if ( ENABLE_SANITIZERS )
+  if ( NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" )
+    message( FATAL_ERROR "ENABLE_SANITIZERS requires GCC or Clang" )
+  endif()
+  add_compile_options( -fsanitize=address,undefined -fno-omit-frame-pointer )
+  add_link_options( -fsanitize=address,undefined )
+endif()
+
 set( CMAKE_CXX_STANDARD 11 )
 set( CMAKE_CXX_STANDARD_REQUIRED TRUE )
 
