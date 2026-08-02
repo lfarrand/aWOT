@@ -21,6 +21,7 @@
 */
 
 #include "aWOT.h"
+#include <limits.h>
 
 Response::Response(Client* client, uint8_t * writeBuffer, int writeBufferLength)
     : m_stream(client),
@@ -35,13 +36,13 @@ Response::Response(Client* client, uint8_t * writeBuffer, int writeBufferLength)
       m_headersCount(0),
       m_bytesSent(0),
       m_ended(false),
-      m_buffer(writeBuffer),
-      m_bufferLength(writeBufferLength),
-      m_bufFill(0),
       m_writeStalled(false),
       // Absolute ceiling starts ticking when the response object is created, i.e.
       // once per request, so it bounds the whole response rather than each buffer.
-      m_writeDeadline(millis() + s_writeTotalBudgetMs) {}
+      m_writeDeadline(millis() + s_writeTotalBudgetMs),
+      m_buffer(writeBuffer),
+      m_bufferLength(writeBufferLength),
+      m_bufFill(0) {}
 
 int Response::availableForWrite() {
   return SERVER_OUTPUT_BUFFER_SIZE - m_bufFill - 1;
@@ -866,7 +867,13 @@ int Request::availableForWrite() {
 }
 
 int Request::available() {
-  return min(m_stream->available(), m_left + m_pushbackDepth);
+  const int remaining = m_left + m_pushbackDepth;
+  if (remaining <= 0) {
+    return 0;
+  }
+
+  const int streamAvailable = m_stream->available();
+  return streamAvailable > 0 ? min(streamAvailable, remaining) : 0;
 }
 
 int Request::bytesRead() { return m_bytesRead; }
@@ -1022,13 +1029,20 @@ int Request::read() {
 int Request::read(uint8_t* buf, size_t size) {
   int ret = 0;
 
-  while (m_pushbackDepth > 0) {
+  while (m_pushbackDepth > 0 && size > 0) {
     *buf++ = m_pushback[--m_pushbackDepth];
     size--;
     ret++;
   }
 
-  int read = m_stream->read(buf, (size < (unsigned)m_left ? size : m_left));
+  if (size == 0 || (m_readingContent && m_left <= 0)) {
+    return ret;
+  }
+
+  const size_t readable = m_readingContent && size > static_cast<size_t>(m_left)
+                        ? static_cast<size_t>(m_left)
+                        : size;
+  int read = m_stream->read(buf, readable);
   if (read == -1) {
     if (ret > 0) {
       return ret;
@@ -1252,8 +1266,18 @@ bool Request::m_processHeaders() {
 bool Request::m_headerValue(char *buffer, int bufferLength) {
   int ch;
 
+  if (buffer == NULL || bufferLength <= 0) {
+    return false;
+  }
+
   if (buffer[0] != '\0') {
     int length = strlen(buffer);
+    // A repeated header needs room for the comma and the final NUL.  The old code
+    // replaced a full buffer's terminator with a comma, advanced past the object,
+    // and later wrote the new terminator one byte out of bounds.
+    if (length + 2 > bufferLength) {
+      return false;
+    }
     buffer[length] = ',';
     buffer = buffer + length + 1;
     bufferLength = bufferLength - (length + 1);
@@ -1278,7 +1302,6 @@ bool Request::m_headerValue(char *buffer, int bufferLength) {
 }
 
 bool Request::m_readInt(int &number) {
-  bool negate = false;
   bool gotNumber = false;
 
   if (!m_skipSpace()) {
@@ -1290,19 +1313,22 @@ bool Request::m_readInt(int &number) {
     return false;
   }
 
-  if (ch == '-') {
-    negate = true;
-    ch = m_timedRead();
-    if (ch == -1) {
-      return false;
-    }
+  // Content-Length is a non-negative decimal value.  Accepting a leading minus
+  // left m_left negative; available() then remained truthy after peer close and
+  // body-drain loops never terminated.
+  if (ch == '-' || ch == '+') {
+    return false;
   }
 
   number = 0;
 
   while (ch >= '0' && ch <= '9') {
     gotNumber = true;
-    number = number * 10 + ch - '0';
+    const int digit = ch - '0';
+    if (number > (INT_MAX - digit) / 10) {
+      return false;
+    }
+    number = number * 10 + digit;
     ch = m_timedRead();
     if (ch == -1) {
       return false;
@@ -1310,10 +1336,6 @@ bool Request::m_readInt(int &number) {
   }
 
   push(ch);
-
-  if (negate) {
-    number = -number;
-  }
 
   return gotNumber;
 }

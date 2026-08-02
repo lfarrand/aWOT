@@ -3,6 +3,10 @@ aWOT
 
 Arduino web server library.
 
+> This branch is the TEG project's maintained fork. See [PATCHES.md](PATCHES.md)
+> for bounded request/response behavior, parser hardening and the regression suite
+> that must survive an upstream sync.
+
 ## Documentation
 #### 1. Getting started
  * [Hello World](https://awot.net/en/starter/hello-world.html)
