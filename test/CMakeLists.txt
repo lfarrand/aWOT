@@ -4,6 +4,11 @@ project( aWOT-test LANGUAGES CXX )
 
 option( ENABLE_COVERAGE "Instrument native tests for gcov/gcovr" OFF )
 option( ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF )
+option( ENABLE_FUZZING "Build the libFuzzer HTTP request harness" OFF )
+
+if ( ENABLE_FUZZING AND ( ENABLE_COVERAGE OR ENABLE_SANITIZERS ) )
+  message( FATAL_ERROR "ENABLE_FUZZING is a standalone instrumented build" )
+endif()
 
 if ( ENABLE_COVERAGE )
   if ( NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" )
@@ -18,6 +23,15 @@ if ( ENABLE_SANITIZERS )
     message( FATAL_ERROR "ENABLE_SANITIZERS requires GCC or Clang" )
   endif()
   add_compile_options( -fsanitize=address,undefined -fno-omit-frame-pointer )
+  add_link_options( -fsanitize=address,undefined )
+endif()
+
+if ( ENABLE_FUZZING )
+  if ( NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" )
+    message( FATAL_ERROR "ENABLE_FUZZING requires Clang/libFuzzer" )
+  endif()
+  add_compile_options( -fsanitize=fuzzer-no-link,address,undefined
+                       -fno-omit-frame-pointer -DAWOT_FUZZING )
   add_link_options( -fsanitize=address,undefined )
 endif()
 
@@ -71,6 +85,16 @@ aux_source_directory( ../src aWOT )
 add_library( ${PROJECT_NAME}-aWOT OBJECT ${aWOT} )
 
 target_include_directories( ${PROJECT_NAME}-aWOT PUBLIC epoxy unittest )
+
+if ( ENABLE_FUZZING )
+  add_executable( aWOT-request-fuzzer fuzz/request_fuzzer.cpp )
+  target_include_directories( aWOT-request-fuzzer PRIVATE ../src )
+  target_link_libraries( aWOT-request-fuzzer PRIVATE
+    ${PROJECT_NAME}-aWOT ${PROJECT_NAME}-EpoxyDuino )
+  target_link_options( aWOT-request-fuzzer PRIVATE
+    -fsanitize=fuzzer,address,undefined )
+  return()
+endif()
 
 file( GLOB TEST_SOURCES *.cpp )
 

@@ -188,12 +188,49 @@ unittest(malformed_or_control_percent_escapes_are_rejected) {
 }
 
 static bool g_formAccepted = false;
+static bool g_formCanariesIntact = false;
 
 void malformedFormHandler(Request &req, Response &res) {
   char name[8];
   char value[8];
   g_formAccepted = req.form(name, sizeof(name), value, sizeof(value));
   res.sendStatus(g_formAccepted ? 204 : 400);
+}
+
+void boundedFormHandler(Request &req, Response &res) {
+  struct FormBuffers {
+    char beforeName;
+    char name[4];
+    char between;
+    char value[4];
+    char afterValue;
+  } buffers = {'A', {}, 'B', {}, 'C'};
+
+  g_formAccepted =
+      req.form(buffers.name, sizeof(buffers.name), buffers.value,
+               sizeof(buffers.value));
+  g_formCanariesIntact = buffers.beforeName == 'A' && buffers.between == 'B' &&
+                         buffers.afterValue == 'C';
+  res.sendStatus(g_formAccepted ? 204 : 400);
+}
+
+unittest(overlong_form_fields_are_rejected_without_overwriting_buffers) {
+  const char *body = "name-is-far-too-long=value-is-also-far-too-long";
+  char request[192];
+  snprintf(request, sizeof(request),
+           "POST / HTTP/1.0" CRLF "Content-Length: %u" CRLF CRLF "%s",
+           static_cast<unsigned>(strlen(body)), body);
+
+  GuardClient client(request);
+  Application app;
+  app.post("/", &boundedFormHandler);
+  g_formAccepted = true;
+  g_formCanariesIntact = false;
+  app.process(&client);
+
+  assertTrue(!g_formAccepted);
+  assertTrue(g_formCanariesIntact);
+  assertTrue(strstr(client.response(), "400 Bad Request") != NULL);
 }
 
 unittest(malformed_or_control_form_percent_escapes_are_rejected) {

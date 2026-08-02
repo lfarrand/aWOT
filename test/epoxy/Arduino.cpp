@@ -25,7 +25,9 @@ static uint32_t digitalReadPinValues = 0;
 static uint32_t digitalWritePinValues = 0;
 
 void yield() {
+#if !defined(AWOT_FUZZING)
   usleep(1000); // prevents program from consuming 100% CPU
+#endif
 }
 
 void pinMode(uint8_t /*pin*/, uint8_t /*mode*/) {}

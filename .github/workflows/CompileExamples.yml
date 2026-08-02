@@ -1,4 +1,8 @@
 name: Compile examples
+
+permissions:
+  contents: read
+
 on:
   push:
     paths:
@@ -15,74 +19,92 @@ on:
 
   workflow_dispatch:
   repository_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   boards:
     name: "Compile for ${{ matrix.config.board }}"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         config:
           - board: "Arduino Uno"
             fqbn: "arduino:avr:uno"
-            platform: "arduino:avr"
+            platform: "arduino:avr@1.8.8"
           - board: "Arduino Leonardo"
             fqbn: "arduino:avr:leonardo"
-            platform: "arduino:avr"
+            platform: "arduino:avr@1.8.8"
           - board: "Arduino Mega2560"
             fqbn: "arduino:avr:mega"
-            platform: "arduino:avr"
+            platform: "arduino:avr@1.8.8"
           - board: "Arduino Due"
             fqbn: "arduino:sam:arduino_due_x"
-            platform: "arduino:sam"
+            platform: "arduino:sam@1.6.12"
           - board: "ESP32 NodeMCU-32S"
             fqbn: "esp32:esp32:nodemcu-32s"
-            platform: "esp32:esp32"
-            additional-url: "--additional-urls https://dl.espressif.com/dl/package_esp32_index.json"
+            platform: "esp32:esp32@3.3.11"
+            additional-url: "https://espressif.github.io/arduino-esp32/package_esp32_index.json"
     steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
       - name: Setup Arduino CLI
-        uses: arduino/setup-arduino-cli@v2
+        uses: arduino/setup-arduino-cli@81d310742121c928ea9c8bbd407b4217b432ae02 # v2.0.0
+        with:
+          version: "1.5.1"
+
       - name: Install platform ${{ matrix.config.platform }}
+        env:
+          ADDITIONAL_URL: ${{ matrix.config.additional-url }}
+          PLATFORM: ${{ matrix.config.platform }}
         run: |
-          arduino-cli config init -v ${{ matrix.config.additional-url }}
-          arduino-cli core update-index -v 
-          arduino-cli core install -v ${{ matrix.config.platform }} --run-post-install
+          set -euo pipefail
+          arduino-cli config init --overwrite
+          if [[ -n "${ADDITIONAL_URL:-}" ]]; then
+            arduino-cli config add board_manager.additional_urls "$ADDITIONAL_URL"
+          fi
+          arduino-cli core update-index
+          arduino-cli core install "$PLATFORM" --run-post-install
+
       - name: Install Arduino libraries
         run: |
+          set -euo pipefail
           arduino-cli lib update-index
-          arduino-cli lib install Ethernet
-          arduino-cli lib install LoRa
-      - name: Checkout
-        uses: actions/checkout@v4
+          arduino-cli lib install "Ethernet@2.0.2"
+          arduino-cli lib install "LoRa@0.8.0"
+
       - name: Compile examples for ${{ matrix.config.board }}
-        id: compile
         env:
-          fqbn: ${{ matrix.config.fqbn }}
+          FQBN: ${{ matrix.config.fqbn }}
         run: |
-          # Compile example sketches:
-          export errors=()
-          for sketch in $( find ./examples -name "*.ino"|sed "s/\ /__SPACE__/g" )
-          do
-            sketch_path=$( echo $sketch |sed "s/__SPACE__/\ /g" )
-            grep -qE 'WiFi|ETH' $sketch_path && grep -qiv '^esp' <<< $fqbn && echo -e "\033[33;1;4mSkip example sketch: $sketch_path for $fqbn board\033[0m" || \
-            {
-              echo -e "\033[34;1;4mCompile example sketch: $sketch_path\033[0m"
-              arduino-cli compile --fqbn ${{ matrix.config.fqbn }} --warnings none `grep -q 'STD_FUNCTION_MIDDLEWARE' $sketch_path && echo "--build-property build.extra_flags=-DSTD_FUNCTION_MIDDLEWARE"`  \
-                --library ../aWOT \
-                "$sketch_path" \
-              || { errors+=($sketch) ; echo -e "\033[31;1;4mERROR COMPILING SKETCH: $sketch_path\033[0m\r\n" ;} \
-            ;}
-          done
-          echo "errors=${errors[@]}" >> $GITHUB_OUTPUT
-      - name: Show errors
-        if: ${{ steps.compile.outputs.errors }}
-        env:
-          errors: ${{ steps.compile.outputs.errors }}
-        run: |
-          #  Show errors
-          for sketch in $errors 
-          do
-            sketch_path=$( echo $sketch |sed "s/__SPACE__/\ /g" )
-            echo -e "\033[31;1;4mERROR COMPILING SKETCH: $sketch_path\033[0m"
-          done
-          exit 1
+          set -euo pipefail
+          errors=()
+          while IFS= read -r -d '' sketch_path; do
+            if grep -qE 'WiFi|ETH' "$sketch_path" && [[ "$FQBN" != esp* ]]; then
+              echo "Skip $sketch_path for $FQBN"
+              continue
+            fi
+
+            args=(arduino-cli compile --fqbn "$FQBN" --warnings all
+                  --library "$GITHUB_WORKSPACE")
+            if grep -q 'STD_FUNCTION_MIDDLEWARE' "$sketch_path"; then
+              args+=(--build-property "build.extra_flags=-DSTD_FUNCTION_MIDDLEWARE")
+            fi
+
+            echo "Compile $sketch_path for $FQBN"
+            if ! "${args[@]}" "$sketch_path"; then
+              errors+=("$sketch_path")
+            fi
+          done < <(find ./examples -name '*.ino' -print0)
+
+          if (( ${#errors[@]} != 0 )); then
+            printf 'Failed example: %s\n' "${errors[@]}" >&2
+            exit 1
+          fi
