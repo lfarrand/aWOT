@@ -152,13 +152,30 @@ void setup() {
 ```
 
 ### Post parameters
+
+`Request::form` reads one `application/x-www-form-urlencoded` pair. Both length
+arguments are buffer sizes in bytes and include the terminating NUL, so a 10-byte
+name holds at most 9 decoded characters. `+` becomes a space and `%HH` is one hex
+byte (`first+name=A%2fB` yields `first name` and `A/B`). The call returns false,
+and the buffers must not be used, when either pointer is `NULL`, either length is
+below 1, the decoded name or value does not fit, or a `%` escape is truncated,
+not hex, or decodes to NUL, CR, LF, or DEL (`0x7F`). Nothing is written for a
+`NULL` or a length below 1.
+
+An over-long pair is still consumed through the next `&` or the end of the body.
+A rejected escape returns immediately and leaves the rest of the body unread, so
+stop the request on false instead of calling `form` again.
+
 ```cpp
 void postParams(Request &req, Response &res) {
   char name[10];
   char value[64];
 
   while (req.left()) {
-    req.form(name, 10, value, 64);
+    if (!req.form(name, 10, value, 64)) {
+      return res.sendStatus(400);
+    }
+
     res.print(name);
     res.print(": ");
     res.println(value);

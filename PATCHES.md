@@ -3,6 +3,32 @@
 This independent fork is modified from upstream. Anyone syncing it must reapply
 what follows, or reintroduce a remotely-triggerable reset of a running inverter.
 
+## Patch 6 — bound `Request::form` to the caller buffers
+
+**Files:** `src/aWOT.cpp`, `test/form-params.cpp`, `test/security-edge.cpp`,
+`test/api-surface.cpp`.
+
+`Request::form` used to decrement the remaining length before storing a byte, then
+keep scanning the pair. After the reserved NUL byte had been accounted for, that
+remaining length went negative and every further byte of an over-long name or value
+was written past the caller buffer. The function still returned false, so a handler
+that checked the result had already had adjacent memory overwritten. The body is
+untrusted.
+
+Lengths are capacities including the NUL. Storage now stops while one byte remains,
+that byte stays zero, and an over-long pair returns false only after the function
+has read through the next `&` or the end of the body. A rejected `%` escape returns
+at once and leaves the remainder unread, so a later `form` call would treat that
+remainder as a new pair. A handler must not use the buffers after false; the
+regression handlers answer 400 and stop. Rejected escapes are a truncated `%`, a
+non-hex digit, or a decode of NUL, CR, LF, or DEL (`0x7F`). `+` is a space. A
+`NULL` pointer or a length below 1 returns false without writing.
+
+`test/form-params.cpp` accepts `test1` in a 6-byte buffer and rejects `test1*`
+with HTTP 400. `test/security-edge.cpp` places canaries around 4-byte buffers and
+checks they survive `name-is-far-too-long=value-is-also-far-too-long`.
+`test/api-surface.cpp` pins `first+name=A%2fB` to `first name` and `A/B`.
+
 ## Patch 5 — complete public-API coverage and parser correctness
 
 **Files:** `src/aWOT.cpp`, `test/api-surface.cpp`, `test/security-edge.cpp`,
